@@ -18,3 +18,5 @@ The original is a real 3D physics scene seen from above, so the port simulates t
 * Visual effects: The sparkle bursts and the trail's exact look are approximations.
 * Scoreboard and win screen: They are simple, since the shared in-game UI prefab was never extracted.
 * Trigger behaviour: Assumed any ball entering it scores.
+
+<img width="416" height="819" alt="image" src="https://github.com/user-attachments/assets/f5b60e89-c287-41d3-85e7-77c56c48f06c" />
