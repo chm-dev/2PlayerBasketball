@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Basketball</title>
+<link rel="icon" href="data:,">
+<style>
+  html, body { margin: 0; height: 100%; background: #0e1f33; overflow: hidden; touch-action: none; user-select: none; -webkit-user-select: none; font-family: system-ui, Arial, sans-serif; }
+  #wrap { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }
+  #stage { position: relative; }
+  canvas { display: block; touch-action: none; }
+  .overlay { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; background: rgba(0,0,0,.5); color: #fff; text-align: center; }
+  .overlay.hidden { display: none; }
+  .overlay h1 { margin: 0 0 8px; font-size: 40px; text-shadow: 0 3px 0 rgba(0,0,0,.35); }
+  .overlay p { margin: 0; font-size: 16px; max-width: 80%; }
+  button { font: inherit; font-size: 22px; font-weight: 700; color: #fff; background: #DE8F6E; border: 4px solid #000; border-radius: 14px; padding: 10px 28px; min-width: 220px; cursor: pointer; box-shadow: 0 5px 0 rgba(0,0,0,.5); }
+  button:active { transform: translateY(3px); box-shadow: 0 2px 0 rgba(0,0,0,.5); }
+  button.blue { background: #3F7DAC; }
+</style>
+</head>
+<body>
+<div id="wrap"><div id="stage">
+  <canvas id="c"></canvas>
+  <div id="menu" class="overlay">
+    <h1>BASKETBALL</h1>
+    <p>Touch the ball and drag it, then let go to shoot it into the hoop on the other side. The ball can only be dragged inside your own half.</p>
+    <button id="b1e">1 Player - Easy</button>
+    <button id="b1m">1 Player - Medium</button>
+    <button id="b1h">1 Player - Hard</button>
+    <button id="b2" class="blue">2 Players</button>
+  </div>
+  <div id="over" class="overlay hidden">
+    <h1 id="overTitle"></h1>
+    <button id="again">Play again</button>
+    <button id="toMenu" class="blue">Menu</button>
+  </div>
+</div></div>
+<script src="game.js?v=2"></script>
+</body>
+</html>
