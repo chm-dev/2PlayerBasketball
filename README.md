@@ -1,6 +1,6 @@
 ## Basketball - web port of Android mini-game from [JungleFrog.NPlayers.Basketball](https://play.google.com/store/apps/details?id=com.JindoBlu.TwoPlayerGamesChallenge&hl=en)
 
-Original APK Reverse Engineered using [REA](https://rea.tools) with Sonnet 5.5 and GPT Luna 6 and rebuilt for web with Sonnet.
+Original APK Reverse Engineered using [REA](https://rea.tools) + Ghidra with Sonnet 5.5 and GPT Luna 6 and rebuilt for web with Sonnet.
 
 The original is a real 3D physics scene seen from above, so the port simulates the ball in 3D and only draws it top-down.
 
