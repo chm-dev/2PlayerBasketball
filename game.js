@@ -326,7 +326,9 @@ function finish(winner) {
 // ---------------------------------------------------------------- input (Touchable + Draggable)
 function toWorld(e) {
   const r = canvas.getBoundingClientRect();
-  return [((e.clientX - r.left) / r.width - 0.5) * HALF_W * 2, (0.5 - (e.clientY - r.top) / r.height) * HALF_L * 2];
+  const nx = (e.clientX - r.left) / r.width, ny = (e.clientY - r.top) / r.height;
+  const flip = G.online === 'guest';   // invert the rotated view for the online guest
+  return [(flip ? 0.5 - nx : nx - 0.5) * HALF_W * 2, (flip ? ny - 0.5 : 0.5 - ny) * HALF_L * 2];
 }
 function canPress() {
   return G.phase === 'playing' && !B.kin && B.holder === null && G.vincoli > 0 && !(G.vsCpu && ballNorth())
@@ -623,7 +625,9 @@ function drawHoop(h) {
 function render() {
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.fillStyle = COL.bg; ctx.fillRect(0, 0, W, H);
-  ctx.setTransform(S, 0, 0, -S, W / 2, H / 2);
+  // online guest: rotate the whole field 180 deg so their half sits at the bottom
+  const flip = G.online === 'guest';
+  ctx.setTransform(flip ? -S : S, 0, 0, flip ? S : -S, W / 2, H / 2);
   ctx.fillStyle = '#fff';
   ctx.fillRect(-24, -0.32, 48, 0.64);
   circle(0, 0, 0.768, '#fff');
@@ -657,7 +661,9 @@ function render() {
   drawScore(G.scores[2], COL.blue, 1.3); drawScore(G.scores[1], COL.red, -1.3);
 }
 function drawScore(v, color, z) {
-  ctx.save(); ctx.translate(-HALF_W + 0.9, z); ctx.scale(1, -1);
+  const flip = G.online === 'guest';
+  // mirrored position + 180 deg rotation keeps the numbers upright on the guest's rotated view
+  ctx.save(); ctx.translate(flip ? HALF_W - 0.9 : -HALF_W + 0.9, z); if (flip) ctx.rotate(Math.PI); ctx.scale(1, -1);
   ctx.font = 'bold 1.6px system-ui, Arial'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   ctx.lineWidth = 0.18; ctx.strokeStyle = 'rgba(0,0,0,.6)'; ctx.strokeText(v, 0, 0);
   ctx.fillStyle = color; ctx.fillText(v, 0, 0);
