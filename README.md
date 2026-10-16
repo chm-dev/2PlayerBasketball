@@ -17,7 +17,10 @@ The original is a real 3D physics scene seen from above, so the port simulates t
 * The menu has a "2 Players - Online" button; the server pairs every two waiting clients into a room.
 * Architecture: **host-authoritative relay**. The first player (Red) runs the full simulation and broadcasts state snapshots (~30/s) plus sound/burst events. The second player (Blue) sends raw touch coordinates and only renders. The Node server (`server.js`, `ws` package) only matches players and forwards messages — it never simulates anything.
 * Each online player is restricted to their own half: Red grabs the ball only when it is south of centre, Blue only when it is north.
-* Known POC limitations: guest input is not predicted (ball follows the finger with one network round-trip of lag), no reconnection, Blue's view is not rotated (their half is at the top of the screen), and everything is plain JSON.
+* Player-relative view: the guest's canvas is rendered rotated 180 deg so their own half (and hoop) sits at the bottom, with the scoreboard counter-rotated to stay upright.
+* Latency display: each client pings the opponent through the server every 2s and shows the round-trip in the top-left corner.
+* The ball sprite and possession circle scale up with ball height (up to +35% at the apex) as a subtle perspective cue; the ground shadow stays constant.
+* Known POC limitations: guest input is not predicted (ball follows the finger with one network round-trip of lag), no reconnection, and everything is plain JSON.
 
 ### Remaining guesses and gaps:
 
