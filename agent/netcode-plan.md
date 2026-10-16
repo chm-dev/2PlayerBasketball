@@ -1,6 +1,6 @@
 # Netcode plan — server-authoritative online multiplayer
 
-Status: proposed, not yet implemented.
+Status: **Phase 0 in progress** (2026-10-17).
 First pass scope: Phases 0–2 (sim extraction + server authority → interpolation → prediction/reconciliation).
 Decisions locked in with the user (2026-10-16):
 
@@ -57,9 +57,66 @@ Move out of `game.js`: `physicsStep`, `collide`, `response`, `cylContact`, `boxC
 * **Emits events** instead of causing effects: `{ev:'bounce',key,impact}`, `{ev:'rim',x,z}`, `{ev:'scored',player}`, `{ev:'respawn',side}`, `{ev:'finished',winner}`. Server forwards them; clients render them (audio/bursts).
 * Scoring-flow `tween`/`delay` (ball shrink into net at 0.5 s, respawn pause 1.0 s) become **tick-based sim timers** so server state and client prediction/replay share one timeline.
 * Determinism hygiene: prefer explicit `Math.sqrt(a²+b²+c²)` over `Math.hypot` where it feeds physics (engine-dependent edge cases); avoid transcendental drift.
-* Node + browser compatible (plain module: attach to `window` or `module.exports`).
+* Node + browser compatible: uses the UMD-like pattern below so `sim.js` works as a `<script>` tag (sets `window.Sim`) and as a Node `require()` (sets `module.exports`). No ES module build step.
 
-`game.js` keeps: rendering, input, audio (driven by events), CPU controller for local modes, score display, resize/camera.
+  ```js
+  // sim.js — top and bottom boilerplate
+  const Sim = (function () {
+    // … all functions close over nothing but parameters …
+    return { create, step, getSnapshot, applyInput /* … */ };
+  })();
+  if (typeof module !== 'undefined' && module.exports) module.exports = Sim;
+  else if (typeof window !== 'undefined') window.Sim = Sim;
+  ```
+
+* **Input boundary:** `onKeep` currently reads live pointer positions from `G.pointers[B.holder]` and `G.cpu`. After extraction, it receives its target position as a parameter (or via `S.inputs[holderId] = { x, z }` set by the caller before `step()`). This is sim.js's only external dependency.
+* **Determinism hygiene — `Math.hypot` replacement:** Four callsites must use explicit `Math.sqrt(a*a + b*b [+ c*c])` to avoid engine-dependent edge cases:
+  - `len()` helper (used by `cylContact`, `boxContact` — lines 423, 429, 446)
+  - `physicsStep` horizontal speed clamp (line 502)
+  - `onKeep` drag-distance check (line 386)
+* **Scoring-flow extraction is the trickiest single piece.** Currently `hoopScored` → 0.5s `tween` on `B.x/y/z/scale` → `afterNet` → 1.0s `delay` → `placeBall`. In the tick-based sim this becomes a state machine with `S.scoringTimer` (counts up each tick) driving the ball position/scale during the 0–0.5s phase, then `S.respawnTimer` for the 0.5–1.5s pause. The server must own every intermediate frame of these animations.
+
+### 3.1 `S` — the shared sim state
+
+This is the complete state object that `sim.js` owns and the server serialises in the `start` message. Clients reconstruct it from `start` (for `S` fields) and hard-coded constants (for static geometry).
+
+```
+S = {
+  // --- ball ---
+  ball: { x, y, z, vx, vy, vz, scale, rot, kin, holder, drag, xg, trailOn, contacts: Set },
+
+  // --- hoops (static collider geometry reconstructed client-side from constants) ---
+  hoops: [{ timer, inTrig }, { timer, inTrig }],
+
+  // --- match flow ---
+  phase: 'playing' | 'scoring' | 'over',
+  scores: [0, p1Score, p2Score],   // index 0 unused; matches legacy G.scores layout
+  winner: 0 | 1 | 2,
+  possesso: 0 | 1 | 2,
+  vincoli: 0 | 1,
+  lancio: 0 | 1 | 2,
+  aChi: 1 | 2,                     // conceding side (gets the ball after score)
+
+  // --- scoring / respawn timers (tick-based, count up from 0) ---
+  scoringTimer: 0,                  // 0→0.5s: ball shrink-into-net animation
+  respawnTimer: 0,                  // 0.5→1.5s: pause before placeBall
+
+  // --- difficulty (local modes only; online always medium) ---
+  diffValue: 0,
+  diffInv: 1,
+
+  // --- per-frame contacts (for sound/effect events) ---
+  stepContacts: Map,               // key → max impact this tick
+
+  // --- tick counter ---
+  tick: 0,
+
+  // --- input for this tick (set by caller before step()) ---
+  inputs: { p1: null | {x,z}, p2: null | {x,z} },
+}
+```
+
+`game.js` keeps: rendering, input, audio (driven by events), CPU controller for local modes (calls sim.js functions through the input interface), score display, resize/camera.
 
 ---
 
@@ -78,8 +135,8 @@ Move out of `game.js`: `physicsStep`, `collide`, `response`, `cylContact`, `boxC
 | `ping`/`pong` | both | extended with server `time` for clock offset |
 | `resume`/`opp_left`/`opp_back` | — | Phase 4 (grace-period aware) |
 
-* Snapshot `b` keeps the POC index order prefix `[x,y,z,…,scale,rot]` but v2 **inserts velocities** `[x,y,z,vx,vy,vz,scale,rot]` — reconciliation/replay needs them (position-only state cannot be deterministically fast-forwarded; nengi.js docs lesson). Keep index order in sync between send and apply.
-* `b[5]` (vz) matters for prediction: the ball's flight is drag-power + throw-up + gravity, all velocity-driven.
+* Snapshot `b` keeps the POC index order prefix `[x,y,z,…,scale,rot]` but v2 **inserts velocities** — `b = [x,y,z, vx,vy,vz, scale,rot]` (indices: x=0, y=1, z=2, vx=3, vy=4, vz=5, scale=6, rot=7). Reconciliation and replay need all three velocity components (position-only state cannot be deterministically fast-forwarded; nengi.js docs lesson). Keep index order in sync between send and apply.
+* All three velocities matter for prediction: `vx`/`vz` drive horizontal ball movement after release; `vy` carries the throw-up + gravity contribution.
 * Sizes: snapshot ~120 B → ~3.5 KB/s at 30 Hz — negligible; plain JSON stays for now.
 
 ---
@@ -103,7 +160,14 @@ Move out of `game.js`: `physicsStep`, `collide`, `response`, `cylContact`, `boxC
 **Phase 2 — prediction + reconciliation**
 * On local input, apply to a sandboxed `S` and run `sim.step`; render from it (zero-lag drag for your own ball).
 * Keep an `inputLog`; on snapshot with `ack[me] = A`: reset `S` to authoritative state, replay inputs with `seq > A`; snap on large error, blend over a few frames on small error (spring-follow timing differences while dragging are the common small-error case).
-* Switch to interpolation when a snapshot's `holder`/half says the opponent controls the ball.
+* **Prediction ownership state machine.** The client predicts the ball's physics iff **all** of these hold:
+  1. `S.ball.holder === myId` — I am currently dragging, **OR**
+  2. `S.ball.holder === null && S.lastReleaser === myId` — I launched the shot and it is still in flight, **OR**
+  3. `S.ball.holder === null && S.lastReleaser === null && ballIsInMyHalf(S)` — the ball is loose in my half and I am the closest player.
+
+  Otherwise the client interpolates from the snapshot buffer. The `possesso`/`lancio`/`vincoli` trio encodes this ownership but the concrete rule above is what the client checks each frame.
+
+* **Reconciliation split — drag vs. flight.** While dragging, reconciliation is input-replay: reset state to authority, re-apply unacknowledged inputs, the result should closely track the server. After shot release, there are no inputs to replay — the ball's path is purely physics-driven. Divergence from cross-engine float differences is corrected by snapping/blending to the authority position in each snapshot. This is a fundamentally different reconciliation path (spring-follow, not input-replay) and should be explicitly separated in code.
 * Prediction never emits audio/particles — server `e` events own those, so nothing double-plays (this is why `sim.js` must be effect-free).
 
 Known Phase-2 limits (fixed later by input timestamping / lag comp): while dragging, the server sees your target slightly later than local prediction → small transient reconciled error; shot release state can differ slightly → corrected continuously by snapshots.
@@ -120,6 +184,7 @@ Known Phase-2 limits (fixed later by input timestamping / lag comp): while dragg
 | 3+ | Tick-stamped inputs, server-side lag comp (validate guest grab radius against ~RTT/2-old ball state), reconnect/resume (`resume`, `opp_back`), protocol versioning/validation, optional binary/delta encoding | Robustness & fairness polish |
 
 * Local modes (`G.online === null`) keep the existing path; `newGame`/`update` semantics preserved, just delegating ball math to `sim.js`.
+* **CPU controller adaptation:** `cpuUpdate`/`cpuThrow` currently call `grab('cpu')`, `releaseBall()`, and directly set `B.vx/vy/vz`. After extraction, the CPU controller stays in `game.js` but drives the sim through the same `S.inputs.cpu` interface. `cpuThrow`'s direct velocity injection (`B.vx = …`) must instead go through a sim function (or be set before `step()` as an applied impulse). The CPU wait/touch/presa state (`G.cpu`) stays in `game.js` — it is not part of `S`.
 * On `game.js` changes bump the `?v=` cache-buster in `index.html` (currently `?v=5`).
 * Update `AGENTS.md` and `README.md` after implementation — they still describe the host-authoritative relay.
 
@@ -128,6 +193,7 @@ Known Phase-2 limits (fixed later by input timestamping / lag comp): while dragg
 * Node golden-replay tests over `sim.js` (record input sequences + expected states) to lock determinism.
 * Two headless bot clients against the server to exercise the loop without a browser.
 * Artificial latency/jitter toggle + net HUD to tune interpolation delay and reconciliation thresholds.
+* **Replay test infrastructure is non-trivial.** Recording requires serialising full `S` state snapshots per tick + the input sequence. Comparing requires loading `sim.js` in Node, feeding recorded inputs, and asserting state equality per tick. Budget ~100+ lines for the test harness itself; it is a Phase 0 subtask.
 
 ## 9. Risks
 
