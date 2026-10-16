@@ -46,6 +46,7 @@ function initAudio() {
     .then(buf => actx.decodeAudioData(buf)).then(b => { SND[name] = b; }).catch(() => {}));
 }
 function play(name, vol = 1, pitchVar = 0.1) {
+  if (G.online === 'host') netSend({ t: 'e', ev: 'snd', n: name, v: vol });   // guest hears it too
   if (!actx || !SND[name]) return;
   const src = actx.createBufferSource(), g = actx.createGain();
   src.buffer = SND[name];
@@ -54,6 +55,135 @@ function play(name, vol = 1, pitchVar = 0.1) {
   src.connect(g); g.connect(actx.destination); src.start();
 }
 const playAny = (names, vol) => play(names[Math.floor(Math.random() * names.length)], vol);
+
+// ---------------------------------------------------------------- networking (host-authoritative POC)
+// When playing online the host (player 1, Red) runs the full simulation and
+// broadcasts snapshots + events; the guest (player 2, Blue) sends touch input
+// and only renders. Local modes are unaffected (G.online stays null).
+const NET = { ws: null, role: null, pid: null, connecting: false, acc: 0, ping: 0, pingTimer: null };
+const r2 = v => Math.round(v * 100) / 100;
+
+function netSend(m) {
+  if (NET.ws && NET.ws.readyState === 1) NET.ws.send(JSON.stringify(m));
+}
+function netConnect() {
+  NET.connecting = true;
+  let url;
+  if (location.protocol.startsWith('http'))
+    url = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host;
+  else url = 'ws://localhost:8080';   // opened via file:// against a local server
+  try { NET.ws = new WebSocket(url); } catch (e) { netFail('Connection failed'); return; }
+  NET.ws.onopen = () => {
+    netSend({ t: 'join' });
+    $('netStatus').textContent = 'Waiting for opponent…';
+  };
+  NET.ws.onmessage = e => { try { netMessage(JSON.parse(e.data)); } catch (err) { /* ignore */ } };
+  NET.ws.onclose = netClosed;
+  NET.ws.onerror = () => { /* onclose follows */ };
+}
+function netFail(msg) {
+  NET.connecting = false; menuButtons(false);
+  $('netStatus').textContent = msg;
+}
+function netClosed() {
+  NET.ws = null; NET.pid = null;
+  if (G.online) return netToMenu('Connection lost');
+  if (NET.connecting) netFail('Connection failed');
+}
+function netToMenu(msg) {
+  G.online = null; NET.role = null; NET.pid = null;
+  clearInterval(NET.pingTimer); NET.pingTimer = null;
+  $('ping').style.display = 'none';
+  if (NET.ws) { const ws = NET.ws; NET.ws = null; try { ws.close(); } catch (e) { /* ignore */ } }
+  G.phase = 'menu';
+  G.tweens = []; G.delays = []; G.bursts = []; G.pointers = {};
+  $('over').classList.add('hidden'); $('menu').classList.remove('hidden');
+  $('again').style.display = '';
+  menuButtons(false);
+  $('netStatus').textContent = msg;
+}
+function menuButtons(disabled) {
+  ['b1e', 'b1m', 'b1h', 'b2', 'b2o'].forEach(id => { $(id).disabled = disabled; });
+}
+function netMessage(m) {
+  switch (m.t) {
+    case 'room': NET.connecting = false; NET.role = m.role; startOnline(m.role); break;
+    case 'opp_left': netToMenu('Opponent left'); break;
+    case 's': if (G.online === 'guest') applySnapshot(m); break;
+    case 'g': if (G.online === 'host') guestGrab(m.x, m.z); break;
+    case 'm': if (G.online === 'host') guestMove(m.x, m.z); break;
+    case 'r': if (G.online === 'host') guestRelease(); break;
+    case 'ping': netSend({ t: 'pong', ts: m.ts }); break;
+    case 'pong': {
+      NET.ping = Math.max(0, Math.round(performance.now() - m.ts));
+      const el = $('ping');
+      el.style.display = 'block';
+      el.textContent = NET.ping + ' ms';
+      break;
+    }
+    case 'e': if (G.online === 'guest') {
+      if (m.ev === 'snd') play(m.n, m.v);
+      else if (m.ev === 'burst') burst(m.x, m.z, m.n, m.c);
+    } break;
+  }
+}
+function startOnline(role) {
+  G.online = role;
+  newGame(false, 'medium');   // same flow as local 2P: no CPU
+  if (role === 'guest') {
+    // guest never simulates: seed render state, snapshots drive everything
+    Object.assign(B, { x: 0, y: 10, z: -5, vx: 0, vy: 0, vz: 0, kin: false, scale: 1, rot: 0, holder: null, xg: false,
+      drag: FREE_DRAG, trail: [], trailOn: true });
+    G.scores = [0, 0, 0]; G.winner = 0; G.possesso = 0; G.phase = 'playing';
+    $('again').style.display = 'none';   // only the host can restart
+  }
+  $('netStatus').textContent = '';
+  // measure round-trip to the opponent (relayed by the server) every 2s
+  clearInterval(NET.pingTimer);
+  NET.ping = 0; $('ping').style.display = 'none';
+  NET.pingTimer = setInterval(() => netSend({ t: 'ping', ts: performance.now() }), 2000);
+  netSend({ t: 'ping', ts: performance.now() });
+}
+// host: guest (Blue) touch input, applied to the local simulation
+function guestGrab(x, z) {
+  if (G.phase !== 'playing' || B.kin || B.holder !== null || G.vincoli <= 0 || !ballNorth()) return;
+  if (Math.hypot(x - B.x, z - B.z) >= 4) return;
+  G.pointers['guest'] = { x, z };
+  grab('guest');
+}
+function guestMove(x, z) {
+  const p = G.pointers['guest'];
+  if (p) { p.x = x; p.z = z; }
+}
+function guestRelease() {
+  delete G.pointers['guest'];
+  if (B.holder === 'guest') releaseBall();
+}
+// host: broadcast state to the guest (~30/s)
+function sendSnapshot() {
+  netSend({
+    t: 's',
+    b: [r2(B.x), r2(B.y), r2(B.z), r2(B.scale), r2(B.rot)],
+    p: G.possesso, sc: [G.scores[1], G.scores[2]],
+    ph: G.phase, k: B.kin ? 1 : 0, ton: B.trailOn ? 1 : 0, w: G.winner,
+  });
+}
+// guest: apply a host snapshot
+function applySnapshot(m) {
+  const prev = G.phase;
+  G.possesso = m.p;
+  G.scores[1] = m.sc[0]; G.scores[2] = m.sc[1];
+  G.winner = m.w;
+  B.x = m.b[0]; B.y = m.b[1]; B.z = m.b[2]; B.scale = m.b[3]; B.rot = m.b[4];
+  B.kin = !!m.k; B.trailOn = !!m.ton;
+  G.phase = m.ph;
+  if (m.ph === 'over' && prev !== 'over') {
+    $('overTitle').textContent = m.w === 1 ? 'Red wins!' : 'Blue wins!';
+    setTimeout(() => { if (G.phase === 'over') $('over').classList.remove('hidden'); }, 600);
+  } else if (m.ph === 'playing' && prev !== 'playing') {
+    $('over').classList.add('hidden');   // covers the host restarting too
+  }
+}
 
 // ---------------------------------------------------------------- hoops (Canestro prefabs)
 function makeHoop(s, player) {
@@ -72,7 +202,7 @@ function makeHoop(s, player) {
 
 // ---------------------------------------------------------------- game state
 const G = {
-  phase: 'menu', vsCpu: true, setting: 'medium',
+  phase: 'menu', vsCpu: true, setting: 'medium', online: null,
   scores: [0, 0, 0],
   possesso: 0, lancio: 0, inHand: false, vincoli: 1, aChi: 0,
   diffValue: 0.5, diffInv: 0.5,
@@ -103,6 +233,11 @@ function burst(x, z, n, color) {
     G.bursts.push({ x, z, vx: Math.cos(a) * s, vz: Math.sin(a) * s, t: 0, life: rand(0.25, 0.5), color, r: rand(0.12, 0.28) });
   }
 }
+// burst + replicate to the guest as an event
+function netBurst(x, z, n, color) {
+  burst(x, z, n, color);
+  if (G.online === 'host') netSend({ t: 'e', ev: 'burst', x: r2(x), z: r2(z), n, c: color });
+}
 
 // ---------------------------------------------------------------- match flow
 function newGame(vsCpu, setting) {
@@ -128,7 +263,7 @@ function placeBall() {
   Object.assign(G.cpu, { timer: 0, presa: false, touch: false });
   G.hoops.forEach(h => { h.inTrig = false; });
   setPossesso(0);
-  burst(B.x, B.z, 10, '#ffffff');
+  netBurst(B.x, B.z, 10, '#ffffff');
 }
 
 function pallaPresa() {
@@ -194,25 +329,45 @@ function toWorld(e) {
   return [((e.clientX - r.left) / r.width - 0.5) * HALF_W * 2, (0.5 - (e.clientY - r.top) / r.height) * HALF_L * 2];
 }
 function canPress() {
-  return G.phase === 'playing' && !B.kin && B.holder === null && G.vincoli > 0 && !(G.vsCpu && ballNorth());
+  return G.phase === 'playing' && !B.kin && B.holder === null && G.vincoli > 0 && !(G.vsCpu && ballNorth())
+    && (G.online !== 'host' || !ballNorth());   // online: the host (Red) only plays its own half
 }
 canvas.addEventListener('pointerdown', e => {
   initAudio();
   const [x, z] = toWorld(e);
-  G.pointers[e.pointerId] = { x, z };
+  if (G.online === 'guest') {                    // forward the touch to the host
+    NET.pid = e.pointerId;
+    try { canvas.setPointerCapture(e.pointerId); } catch (err) { /* synthetic pointer */ }
+    netSend({ t: 'g', x: r2(x), z: r2(z) });
+    e.preventDefault();
+    return;
+  }
+  const id = G.online === 'host' ? 'host' : e.pointerId;
+  G.pointers[id] = { x, z };
   if (canPress() && Math.hypot(x - B.x, z - B.z) < 4) {
     try { canvas.setPointerCapture(e.pointerId); } catch (err) { /* synthetic pointer */ }
-    grab(e.pointerId);
+    grab(id);
   }
   e.preventDefault();
 });
 canvas.addEventListener('pointermove', e => {
-  const p = G.pointers[e.pointerId];
-  if (p) { const [x, z] = toWorld(e); p.x = x; p.z = z; }
+  const [x, z] = toWorld(e);
+  if (G.online === 'guest') {
+    if (e.pointerId === NET.pid) netSend({ t: 'm', x: r2(x), z: r2(z) });
+    return;
+  }
+  const id = G.online === 'host' ? 'host' : e.pointerId;
+  const p = G.pointers[id];
+  if (p) { p.x = x; p.z = z; }
 });
 function pointerEnd(e) {
-  delete G.pointers[e.pointerId];
-  if (B.holder === e.pointerId) releaseBall();
+  if (G.online === 'guest') {
+    if (e.pointerId === NET.pid) { NET.pid = null; netSend({ t: 'r' }); }
+    return;
+  }
+  const id = G.online === 'host' ? 'host' : e.pointerId;
+  delete G.pointers[id];
+  if (B.holder === id) releaseBall();
 }
 canvas.addEventListener('pointerup', pointerEnd);
 canvas.addEventListener('pointercancel', pointerEnd);
@@ -350,7 +505,7 @@ function physicsStep(dt) {
   stepContacts.forEach((impact, key) => {
     if (B.contacts.has(key)) return;
     if (impact > 2) {
-      if (key.startsWith('rim')) { play('rim', 1, 0.1); burst(B.x, B.z, 6, '#ffffff'); }
+      if (key.startsWith('rim')) { play('rim', 1, 0.1); netBurst(B.x, B.z, 6, '#ffffff'); }
       else playAny(['bounce_0', 'bounce_1', 'bounce_2', 'bounce_3', 'bounce_4', 'bounce_5', 'bounce_6'], clamp(0.5 + impact / 80, 0.5, 1));
     }
     if (key === 'floor') groundTouch();
@@ -417,6 +572,8 @@ function resize() {
   W = canvas.width; H = canvas.height; S = H / (HALF_L * 2);
 }
 
+// Subtle top-down perspective: the ball grows as it rises toward the camera (up to +35% at MAX_Y)
+const ballScale = () => B.scale * (1 + 0.35 * clamp(B.y / MAX_Y, 0, 1));
 const tintCache = new Map();
 function tinted(img, color) {
   const key = img.src + color;
@@ -492,8 +649,8 @@ function render() {
       ctx.beginPath(); ctx.arc(tr[i].x, tr[i].z, w, 0, Math.PI * 2); ctx.fill();
     }
   }
-  if (G.possesso !== 0 && B.scale > 0.01) circle(B.x, B.z, 1.536 * B.scale, pc);
-  if (B.scale > 0.01) sprite(IMG.ball, B.x, B.z, 2.56 * B.scale, 2.56 * B.scale, 0.5, 0.5, null, -B.rot * Math.PI / 180);
+  if (G.possesso !== 0 && B.scale > 0.01) circle(B.x, B.z, 1.536 * ballScale(), pc);
+  if (B.scale > 0.01) sprite(IMG.ball, B.x, B.z, 2.56 * ballScale(), 2.56 * ballScale(), 0.5, 0.5, null, -B.rot * Math.PI / 180);
 
   G.bursts.forEach(p => circle(p.x, p.z, p.r, p.color, 1 - p.t / p.life));
 
@@ -510,16 +667,35 @@ function drawScore(v, color, z) {
 let last = 0;
 function frame(ts) {
   const dt = Math.min((ts - last) / 1000 || 0, 0.05); last = ts;
-  update(dt); render();
+  if (G.online === 'guest') guestUpdate(dt);
+  else {
+    update(dt);
+    if (G.online === 'host') {   // broadcast snapshots ~30/s
+      NET.acc += dt;
+      if (NET.acc >= 0.033) { NET.acc = 0; sendSnapshot(); }
+    }
+  }
+  render();
   requestAnimationFrame(frame);
+}
+// guest: visuals only — ball state arrives via snapshots, particles run locally
+function guestUpdate(dt) {
+  G.time += dt;
+  G.bursts = G.bursts.filter(p => { p.t += dt; p.x += p.vx * dt; p.z += p.vz * dt; return p.t < p.life; });
+  if (G.phase === 'playing' && B.trailOn && !B.kin) B.trail.push({ x: B.x, z: B.z, t: G.time });
+  while (B.trail.length && G.time - B.trail[0].t > 0.15) B.trail.shift();
 }
 
 $('b1e').onclick = () => newGame(true, 'easy');
 $('b1m').onclick = () => newGame(true, 'medium');
 $('b1h').onclick = () => newGame(true, 'hard');
 $('b2').onclick = () => newGame(false, 'medium');
+$('b2o').onclick = () => { initAudio(); menuButtons(true); $('netStatus').textContent = 'Connecting…'; netConnect(); };
 $('again').onclick = () => newGame(G.vsCpu, G.setting);
-$('toMenu').onclick = () => { G.phase = 'menu'; $('over').classList.add('hidden'); $('menu').classList.remove('hidden'); };
+$('toMenu').onclick = () => {
+  if (G.online) { netToMenu(''); return; }   // leaving an online match drops the room
+  G.phase = 'menu'; $('over').classList.add('hidden'); $('menu').classList.remove('hidden');
+};
 addEventListener('resize', resize);
 resize();
 Promise.all(Object.entries(IMG_FILES).map(([k, f]) => new Promise(res => {

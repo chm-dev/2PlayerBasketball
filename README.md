@@ -11,6 +11,14 @@ The original is a real 3D physics scene seen from above, so the port simulates t
 * Scoring: The ball shrinks into the net and, after a pause, respawns on the side of the team that conceded. A match is first to 5.
 * Assets: Sprites and sounds are extracted from the game: ball, hoop base, net, grab, swish, rim and bounce sounds, and the whistle.
 
+### Online multiplayer (proof of concept)
+
+* Run `npm install` then `npm start` (or `node server.js`) and open `http://localhost:8080` in two windows/devices on the network.
+* The menu has a "2 Players - Online" button; the server pairs every two waiting clients into a room.
+* Architecture: **host-authoritative relay**. The first player (Red) runs the full simulation and broadcasts state snapshots (~30/s) plus sound/burst events. The second player (Blue) sends raw touch coordinates and only renders. The Node server (`server.js`, `ws` package) only matches players and forwards messages — it never simulates anything.
+* Each online player is restricted to their own half: Red grabs the ball only when it is south of centre, Blue only when it is north.
+* Known POC limitations: guest input is not predicted (ball follows the finger with one network round-trip of lag), no reconnection, Blue's view is not rotated (their half is at the top of the screen), and everything is plain JSON.
+
 ### Remaining guesses and gaps:
 
 * Rim shape: The rim is a plain round cylinder where the original's is slightly oval.
