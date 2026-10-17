@@ -9,6 +9,7 @@
   html, body { margin: 0; height: 100%; background: #0e1f33; overflow: hidden; touch-action: none; user-select: none; -webkit-user-select: none; font-family: system-ui, Arial, sans-serif; }
   #wrap { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }
   #ping { position: absolute; top: 6px; left: 8px; color: rgba(0,0,0,.75); font-size: 16px; font-weight: 600; text-shadow: 0 1px 2px rgba(200,0,200,.6); display: none; z-index: 5; }
+  #hud { position: absolute; top: 8px; right: 8px; color: rgba(0,0,0,.75); font-size: 13px; font-weight: 600; text-shadow: 0 1px 2px rgba(200,0,200,.6); display: none; z-index: 5; }
   #stage { position: relative; }
   canvas { display: block; touch-action: none; }
   .overlay { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; background: rgba(0,0,0,.5); color: #fff; text-align: center; }
@@ -24,13 +25,10 @@
 <div id="wrap"><div id="stage">
   <canvas id="c"></canvas>
   <span id="ping"></span>
+  <span id="hud"></span>
   <div id="menu" class="overlay">
     <h1>BASKETBALL</h1>
-    <p>Touch the ball and drag it, then let go to shoot it into the hoop on the other side. The ball can only be dragged inside your own half.</p>
-    <button id="b1e">1 Player - Easy</button>
-    <button id="b1m">1 Player - Medium</button>
-    <button id="b1h">1 Player - Hard</button>
-    <button id="b2" class="blue">2 Players</button>
+    <p>Touch the ball and drag it, then let go to shoot it into the hoop on the other side. The ball can only be dragged inside your own half. First to 5 wins.</p>
     <button id="b2o" class="blue">2 Players - Online</button>
     <p id="netStatus"></p>
   </div>
@@ -40,6 +38,8 @@
     <button id="toMenu" class="blue">Menu</button>
   </div>
 </div></div>
-<script src="game.js?v=5"></script>
+<script src="sim.js?v=1"></script>
+<script src="lib/snapshot-interpolation.js?v=1"></script>
+<script src="game.js?v=7"></script>
 </body>
 </html>

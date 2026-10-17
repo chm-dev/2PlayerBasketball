@@ -1,6 +1,24 @@
 # Netcode plan — server-authoritative online multiplayer
 
-Status: **Phase 0 in progress** (2026-10-17).
+Status: **Phases 0–2 implemented** (2026-10-17). `AGENTS.md` is the living handoff doc
+for the code as built; the deviations below are the parts of this plan that changed during
+implementation.
+
+**Implementation notes — where the built code differs from this plan:**
+
+* **Local/CPU play was removed** (user decision, to simplify): the game is online-only, so
+  §7's "local modes keep working unchanged" and the CPU-controller adaptation are moot, and
+  the difficulty system plus the 1P/2P menu entries are gone.
+* Snapshot `b` is `[x,y,z,vx,vy,vz,scale,rot,tx,ty,tz,drag]` — the drag target and damping
+  were added because reconciliation must fast-forward deterministically while dragging.
+* The snapshot tick is `tk`; `t` is reserved for the message type.
+* Phase 1 uses the vendored `@geckos.io/snapshot-interpolation` at its default fixed
+  3-frame delay — §6's "adaptive to measured jitter" delay is deferred.
+* Restart is an `again` message (either player) and the match token is regenerated per
+  `start`, so inputs in flight from the previous match are rejected.
+* Tests live in `test/` (`npm test`): sim golden replay/determinism, headless bot clients,
+  a prediction/reconciliation convergence bot, and a client boot smoke test.
+
 First pass scope: Phases 0–2 (sim extraction + server authority → interpolation → prediction/reconciliation).
 Decisions locked in with the user (2026-10-16):
 

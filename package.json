@@ -2,9 +2,10 @@
   "name": "2playerbasketball",
   "version": "1.0.0",
   "private": true,
-  "description": "Web port of the JungleFrog Basketball mini-game, with online 2-player POC",
+  "description": "Web port of the JungleFrog Basketball mini-game, server-authoritative online multiplayer",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node --test"
   },
   "dependencies": {
     "ws": "^8.18.0"
