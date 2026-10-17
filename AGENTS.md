@@ -97,6 +97,14 @@ Snapshot field `b` index order (**keep send/apply in sync**, `Sim.snapshot` /
   bit-identical across engines) — enforced by a test. No `Math.random`.
 * `groundTouch` also clears `lastReleaser`, so a ball that has landed counts as
   "loose in my half" for prediction ownership.
+* **Dead-ball watchdog** (`deadBallGuard`, `S.restTicks`): possession is only
+  unresolved while a shot is in flight, and a live shot is never stationary — so
+  a ball that is motionless with `vincoli 0` for `DEAD_BALL_TICKS` (~2 s) is
+  always a bug. The guard clears `possesso`/`lancio`/`inHand` and sets
+  `vincoli 1`, emitting `{ev:'unstick'}` (clients ignore it; the server logs it).
+  `restTicks` travels in the `rs` snapshot field so prediction agrees. It is a
+  safety net, **not** the fix for a specific case — reachable states are resolved
+  by `groundTouch` on the very next floor tick.
 
 ## `game.js` key points
 
@@ -116,6 +124,17 @@ Snapshot field `b` index order (**keep send/apply in sync**, `Sim.snapshot` /
   clock-offset correction for us.
 * Dev latency queues (`outQ`/`inQ`) delay both directions monotonically.
 * `#hud` shows rtt / snap rate / jitter / correction count.
+* **Grab input is server-arbitrated.** `pointerdown` only checks that the touch is
+  near the ball, then sends `i` and lets the server apply the rules — a stale or
+  blind predicted state must never silently swallow a grab. `grabBlockReason()`
+  reports what the client *believes* for the overlay only. The server's verdict
+  (`NET.grant`) is read off the ack in `reconcile`.
+* **Debug overlay**: `?debug=1` (or press **D**) shows net health (snapshot rate,
+  age since the last snapshot, `STALE!`, vault size, PREDICT/INTERP/NODATA),
+  the full server state from `P` (`possesso`/`vincoli`/`lancio`/`kin`/`inHand`/
+  `restTicks`), the rendered ball, the held pointer, the grab verdict, and a
+  `*** DEAD BALL ***` flag. Use it first when a stall is reported — it separates
+  "the server stopped sending" from "the server's state is stuck".
 
 ## Orientation (p2 view)
 
@@ -141,6 +160,9 @@ p2's canvas is rendered rotated 180° so their half is at the bottom:
 * `vincoli === 0` means "the ball is in the opponent's half of its owner and has
   not landed yet" — during that window *nobody* can grab it by design, so any
   path that leaves `vincoli` 0 without a reachable floor contact is a dead ball.
+  A watchdog (`deadBallGuard`, ~2 s) guarantees this can never stall a match, and
+  the server prints `dead-ball guard fired ...` when it fires — that log line is
+  the evidence to ask a user for if a stall is ever reported again.
 * The token is regenerated on every `start` so pre-restart inputs in flight are
   rejected. `ack` resets with it.
 * Backpressure: the server skips a snapshot when `bufferedAmount` is high but
@@ -158,7 +180,8 @@ p2's canvas is rendered rotated 180° so their half is at the bottom:
 
 * `test/sim.test.js` — golden replay/determinism, `dump`/`load` round-trip, wire
   snapshot round-trip, half/grab rules, scoring + respawn + win flow, the
-  possession-freeze regression + fuzz, and hygiene.
+  possession-freeze regression + fuzz, the dead-ball watchdog (fires on a stuck
+  state, stays silent for a live shot), and hygiene.
 * `test/server.test.js` — headless bots: pairing, start state, input→sim→
   snapshot→ack, event relay, input validation, version rejection, disconnect,
   restart.

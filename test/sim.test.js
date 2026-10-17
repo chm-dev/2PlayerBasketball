@@ -135,14 +135,52 @@ test('a ball rolled across the halfway line still resolves possession (no freeze
       holder: 0, drag: 1, kin: false, xg: false, contacts: new Set(), trailOn: true });
     S.possesso = dir > 0 ? 1 : 2;
     S.lancio = 0; S.vincoli = 1; S.inHand = false;
-    for (let i = 0; i < 900; i++) Sim.step(S, []);
+    // must resolve promptly because groundTouch runs every floor tick -- NOT by
+    // waiting for the 2 s dead-ball watchdog, so bound the tick it resolves on
+    let resolvedAt = -1;
+    for (let i = 0; i < 900; i++) {
+      Sim.step(S, []);
+      if (resolvedAt < 0 && S.possesso === 0 && S.vincoli > 0) resolvedAt = i;
+    }
     const B = S.ball;
     const speed = Math.sqrt(B.vx * B.vx + B.vy * B.vy + B.vz * B.vz);
     assert.equal(S.phase, 'playing');
-    assert.ok(speed < 0.5, 'the ball should have come to rest');
-    assert.ok(B.y < 1.33, 'the ball should be on the floor');
+    assert.ok(resolvedAt >= 0 && resolvedAt < 150,
+      'possession should resolve promptly, not via the watchdog (resolvedAt ' + resolvedAt + ')');
     assert.equal(S.possesso, 0, 'possession should have resolved to loose');
     assert.ok(S.vincoli > 0, 'the ball must be grabbable again (vincoli > 0)');
+    assert.ok(B.y < 1.33 && speed < 0.5, 'the ball should end up at rest on the floor');
+  }
+});
+
+test('dead-ball watchdog releases a state the normal rules cannot resolve', () => {
+  // `inHand` with no holder keeps the possession rules from running, and lancio 2
+  // with the ball in the north half makes groundTouch bail out — nothing else can
+  // clear `vincoli 0`, so only the watchdog can rescue the match. (Reachable
+  // states are all resolved by groundTouch; this exercises the safety net.)
+  const S = Sim.create();
+  Object.assign(S.ball, { x: 3, y: 1.28, z: 4, vx: 0, vy: 0, vz: 0, holder: 0, drag: 1,
+    kin: false, xg: false, contacts: new Set(), trailOn: true });
+  S.possesso = 2; S.lancio = 2; S.vincoli = 0; S.inHand = true; S.lastReleaser = 2;
+  let unstuck = -1, unstickEvent = false;
+  for (let i = 0; i < 400; i++) {
+    for (const e of Sim.step(S, [])) if (e.ev === 'unstick') unstickEvent = true;
+    if (S.vincoli > 0) { unstuck = i; break; }
+  }
+  assert.ok(unstuck >= 0, 'the watchdog must release the ball');
+  assert.ok(unstuck <= 130, 'within ~2 s, got ' + unstuck + ' ticks');
+  assert.ok(unstickEvent, 'an unstick event should be emitted for diagnostics');
+  assert.equal(S.possesso, 0);
+  assert.equal(S.inHand, false, 'the watchdog also clears the inconsistent inHand');
+  assert.ok(S.vincoli > 0, 'grabbable after the watchdog fires');
+});
+
+test('dead-ball watchdog does not fire during a normal arced shot', () => {
+  const S = Sim.create();
+  Sim.step(S, [{ p: 1, k: 'g', x: 0, z: -5 }]);
+  Sim.step(S, [{ p: 1, k: 'r' }]);
+  for (let i = 0; i < 400; i++) {
+    for (const e of Sim.step(S, [])) assert.notEqual(e.ev, 'unstick', 'watchdog fired on a live shot at tick ' + S.tick);
   }
 });
 
@@ -172,7 +210,7 @@ test('fuzz: the ball never stays ungrabbable at rest on the floor', () => {
       const speed = Math.sqrt(B.vx * B.vx + B.vy * B.vy + B.vz * B.vz);
       const dead = S.phase === 'playing' && B.y <= 1.33 && speed < 0.5 && S.vincoli === 0;
       stuck = dead ? stuck + 1 : 0;
-      assert.ok(stuck < 180, 'ball dead on the floor for ' + (stuck / 60).toFixed(1) +
+      assert.ok(stuck < 60, 'ball dead on the floor for ' + (stuck / 60).toFixed(1) +
         's (run ' + run + ', tick ' + S.tick + ', possesso ' + S.possesso + ', lancio ' + S.lancio + ')');
     }
   }

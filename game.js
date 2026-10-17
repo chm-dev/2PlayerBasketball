@@ -65,7 +65,8 @@ const playAny = (names, vol) => play(names[Math.floor(Math.random() * names.leng
 // MY = this client's identity/input stream, P = predicted sim state (a Sim state
 // object, never the render source of truth), RB = the ball actually drawn.
 const NET = { ws: null, connecting: false, pingTimer: null, rtt: 0, offset: null,
-  snapLast: 0, jitter: 0, snapCount: 0, snapRate: 0, corrections: 0 };
+  snapLast: 0, jitter: 0, snapCount: 0, snapRate: 0, corrections: 0,
+  grabs: 0, grabFar: 0, grabWhy: '', grabSeq: 0, grabSentAt: 0, grant: null };
 const MY = { role: 0, seq: 0, token: null };   // role: 1 = p1 (Red/south), 2 = p2 (Blue/north)
 let P = null;
 const inputs = [];                             // { seq, k, x, z, tick, used } pending input log
@@ -142,8 +143,8 @@ function netMessage(m) {
     case 'ping': rawSend({ t: 'pong', ts: m.ts, time: Date.now() }); break;
     case 'pong': {
       NET.rtt = Math.max(0, Math.round(performance.now() - m.ts));
-      if (typeof m.time === 'number') {   // server clock offset (plan §6)
-        const off = m.time + NET.rtt / 2 - performance.now();
+      if (typeof m.time === 'number') {   // client-vs-server clock skew (epoch ms)
+        const off = m.time + NET.rtt / 2 - Date.now();
         NET.offset = NET.offset === null ? off : NET.offset + (off - NET.offset) * 0.1;
       }
       const el = $('ping');
@@ -184,6 +185,7 @@ function sendInput(k, x, z) {
   const e = { seq: MY.seq, k, x: x === undefined ? 0 : r2(x), z: z === undefined ? 0 : r2(z), tick: P.tick, used: false };
   inputs.push(e);
   if (inputs.length > 240) inputs.splice(0, inputs.length - 240);
+  if (k === 'g') { NET.grabSeq = e.seq; NET.grabSentAt = performance.now(); }
   netSend({ t: 'i', seq: e.seq, k, x: e.x, z: e.z, token: MY.token });
 }
 
@@ -261,6 +263,8 @@ function reconcile(m) {
       smooth.x = smooth.y = smooth.z = 0; NET.corrections++;
     }
   }
+  // the ack tells us the server's verdict on the last grab we sent
+  if (NET.grabSeq && A >= NET.grabSeq) { NET.grant = P.ball.holder === MY.role; NET.grabSeq = 0; }
   // server did not grant (or already dropped) my grab — stop streaming moves
   if (holdPointer !== null && P.ball.holder !== MY.role) holdPointer = null;
 }
@@ -293,22 +297,35 @@ function toWorld(e) {
   const flip = MY.role === 2;   // invert the rotated view for p2
   return [(flip ? 0.5 - nx : nx - 0.5) * HALF_W * 2, (flip ? ny - 0.5 : 0.5 - ny) * HALF_L * 2];
 }
-// Client-side pre-check against the predicted state; the server re-validates.
-function canGrab(x, z) {
-  if (!P || P.phase !== 'playing') return false;
+// Client-side pre-check. The server is the authority: this only decides whether
+// the touch is *near the ball* — the full rule set is deliberately NOT applied
+// here, so a stale/blind predicted state can never silently swallow a grab that
+// the server would have accepted. grabBlockReason() just reports what the client
+// believes, for the debug overlay.
+function grabBlockReason(x, z) {
+  if (!P) return 'no-state';
+  if (P.phase !== 'playing') return 'phase=' + P.phase;
   const B = P.ball;
-  if (B.kin || B.holder !== 0 || P.vincoli <= 0) return false;
-  if (MY.role === 1 ? B.z > 0 : B.z < 0) return false;   // own half only (p1 south, p2 north)
-  return Math.hypot(x - B.x, z - B.z) < Sim.DRAG_MAX_DIST;
+  if (B.kin) return 'kin';
+  if (B.holder !== 0) return 'holder=' + B.holder;
+  if (P.vincoli <= 0) return 'vincoli=0';
+  if (MY.role === 1 ? B.z > 0 : B.z < 0) return 'wrong-half';
+  return Math.hypot(x - B.x, z - B.z) < Sim.DRAG_MAX_DIST ? null : 'far';
 }
 canvas.addEventListener('pointerdown', e => {
   initAudio();
   if (!P) return;
   const [x, z] = toWorld(e);
-  if (canGrab(x, z)) {
+  const near = Math.hypot(x - P.ball.x, z - P.ball.z) < Sim.DRAG_MAX_DIST;
+  if (near) {
+    NET.grabs++;
+    NET.grabWhy = grabBlockReason(x, z) || 'ok';
     holdPointer = e.pointerId;
     try { canvas.setPointerCapture(e.pointerId); } catch (err) { /* synthetic pointer */ }
-    sendInput('g', x, z);
+    sendInput('g', x, z);            // let the server decide
+  } else {
+    NET.grabFar++;
+    NET.grabWhy = 'far=' + Math.hypot(x - P.ball.x, z - P.ball.z).toFixed(1);
   }
   e.preventDefault();
 });
@@ -366,6 +383,51 @@ function updateHud() {
   NET.snapCount = 0; hudLast = now;
   $('hud').textContent = 'rtt ' + NET.rtt + 'ms · snap ' + NET.snapRate + '/s · jit ' +
     Math.round(NET.jitter) + 'ms · corr ' + NET.corrections + (DEV_LAT || DEV_JIT ? ' · LAT SIM' : '');
+}
+
+// ---------------------------------------------------------------- debug overlay
+// ?debug=1 (or press D) shows the whole net + state picture, so a stall can be
+// diagnosed from the screen rather than reproduced in code.
+let dbgOn = false;
+function setDbg(on) {
+  dbgOn = on;
+  const el = $('dbg');
+  el.style.display = on ? 'block' : 'none';
+  if (!on) el.textContent = '';
+}
+addEventListener('keydown', e => { if (e.key === 'd' || e.key === 'D') setDbg(!dbgOn); });
+let dbgAcc = 0;
+function updateDebug(dt) {
+  if (!dbgOn) return;
+  const el = $('dbg');
+  dbgAcc += dt;
+  if (dbgAcc < 0.1) return;
+  dbgAcc = 0;
+  const now = performance.now();
+  const age = NET.snapLast ? Math.round(now - NET.snapLast) : -1;
+  const B = P && P.ball;
+  const mode = !P ? 'no-state' : (shouldPredict() ? 'PREDICT' : (SNAP.vault.size ? 'INTERP' : 'NODATA'));
+  const speed = B ? Math.sqrt(B.vx * B.vx + B.vy * B.vy + B.vz * B.vz) : 0;
+  // the dead-ball signature: nobody may touch it and it is not moving
+  const dead = !!B && P.phase === 'playing' && P.vincoli <= 0 && B.holder === 0 && !B.kin && speed < 0.5;
+  const L = [];
+  L.push(`p${MY.role || '-'} ph ${UI.phase}${P && P.phase !== UI.phase ? ' (S:' + P.phase + ')' : ''}  ` +
+    `ws ${NET.ws ? (NET.ws.readyState === 1 ? 'open' : 'state' + NET.ws.readyState) : 'none'}  ` +
+    `snap ${NET.snapRate}/s  last ${age < 0 ? '-' : age + 'ms'}${age > 250 ? '  STALE!' : ''}  ` +
+    `vault ${SNAP.vault.size}  ${mode}`);
+  L.push(`rtt ${NET.rtt}ms  jit ${Math.round(NET.jitter)}ms  corr ${NET.corrections}  ` +
+    `clkoff ${NET.offset === null ? '-' : Math.round(NET.offset)}ms`);  if (B) {
+    L.push(`S ball ${B.x.toFixed(2)},${B.y.toFixed(2)},${B.z.toFixed(2)}  ` +
+      `v ${B.vx.toFixed(2)},${B.vy.toFixed(2)},${B.vz.toFixed(2)} |${speed.toFixed(2)}|`);
+    L.push(`  h${B.holder} poss${P.possesso} vinc${P.vincoli} lanc${P.lancio} kin${B.kin ? 1 : 0} ` +
+      `ih${P.inHand ? 1 : 0} lr${P.lastReleaser} xg${B.xg ? 1 : 0} rest${P.restTicks} tick${P.tick}`);
+  }
+  L.push(`RB ${RB.x.toFixed(2)},${RB.y.toFixed(2)},${RB.z.toFixed(2)}  ptr ${holdPointer === null ? '-' : 'held'}  ` +
+    `grabs ${NET.grabs} far ${NET.grabFar} why ${NET.grabWhy || '-'}` +
+    (NET.grabSeq ? `  GRAB IN FLIGHT ${Math.round(now - NET.grabSentAt)}ms`
+      : (NET.grant === null ? '' : `  last grab ${NET.grant ? 'GRANTED' : 'REJECTED'}`)));
+  if (dead) L.push('*** DEAD BALL: vincoli 0, at rest, nobody may grab ***');
+  el.textContent = L.join('\n');
 }
 function flushDevQueues() {
   if (!DEV_LAT && !DEV_JIT) return;
@@ -499,6 +561,7 @@ function frame(ts) {
     updateTrail();
     updateHud();
   }
+  updateDebug(dt);
   G.bursts = G.bursts.filter(p => { p.t += dt; p.x += p.vx * dt; p.z += p.vz * dt; return p.t < p.life; });
   render();
   requestAnimationFrame(frame);
@@ -507,6 +570,7 @@ function frame(ts) {
 $('b2o').onclick = () => { initAudio(); menuButtons(true); $('netStatus').textContent = 'Connecting…'; netConnect(); };
 $('again').onclick = () => netSend({ t: 'again' });
 $('toMenu').onclick = () => netToMenu('');
+if (QS.get('debug') === '1') setDbg(true);
 addEventListener('resize', resize);
 resize();
 Promise.all(Object.entries(IMG_FILES).map(([k, f]) => new Promise(res => {

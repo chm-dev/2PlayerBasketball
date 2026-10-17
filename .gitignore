@@ -27,3 +27,5 @@ Desktop.ini
 # Test coverage / temp
 coverage/
 *.tmp
+
+.playwright-mcp

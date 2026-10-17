@@ -19,6 +19,7 @@ The original is a real 3D physics scene seen from above, so the port simulates t
 * Each online player is restricted to their own half: Red (p1) grabs the ball only when it is south of centre, Blue (p2) only when it is north.
 * Player-relative view: p2's canvas is rendered rotated 180 deg so their own half (and hoop) sits at the bottom, with the scoreboard counter-rotated to stay upright.
 * Latency display: each client pings the server every 2s and shows the round-trip in the top-left corner; a small HUD (top-right) shows snapshot rate, jitter and correction count. Add `?lat=120&jit=30` to the URL to simulate round-trip latency and jitter locally.
+* Diagnostics: add `?debug=1` (or press **D**) for an overlay with the authoritative state (`possesso`/`vincoli`/`holder`), snapshot age, interpolation mode and the verdict on your last grab. If the ball is ever stuck and nobody can pick it up, the ball is released automatically after ~2 s and the server logs `dead-ball guard fired ...` — please report that line.
 * The ball sprite and possession circle scale up with ball height (up to +35% at the apex) as a subtle perspective cue; the ground shadow stays constant.
 * Known limitations: no reconnection (a disconnect ends the match), inputs are not tick-stamped (no server-side lag compensation yet), and the opponent's grab is not predicted. Everything is plain JSON. `npm test` runs the sim/determinism and headless-bot suites.
 

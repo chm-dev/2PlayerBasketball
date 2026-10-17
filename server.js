@@ -134,6 +134,14 @@ function tickRooms() {
     }
     const events = Sim.step(room.S, inputs);
     if (events.length) {
+      for (const ev of events) {
+        if (ev.ev === 'unstick') {   // dead-ball watchdog fired: worth investigating
+          const b = room.S.ball;
+          console.log(`[${room.key}] dead-ball guard fired tick ${room.S.tick}: ball ` +
+            `${b.x.toFixed(2)},${b.y.toFixed(2)},${b.z.toFixed(2)} poss ${room.S.possesso} ` +
+            `lanc ${room.S.lancio} rest ${room.S.restTicks}`);
+        }
+      }
       broadcast(room, { t: 'e', tick: room.S.tick, evs: events });
     }
     if (room.S.tick % SNAP_EVERY === 0) {

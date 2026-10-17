@@ -60,6 +60,7 @@
       phase: 'playing', scores: [0, 0, 0], winner: 0,
       possesso: 0, vincoli: 1, lancio: 0, inHand: false, aChi: 0, lastReleaser: 0,
       scoringTimer: 0, respawnTimer: 0, scoreDone: false, scoreFrom: null, scoreTo: null,
+      restTicks: 0,                          // dead-ball watchdog counter (see deadBallGuard)
       hold: { 1: null, 2: null },          // last pointer position per player (drag target source)
       stepContacts: new Map(),
       events: [],                           // events emitted by the last step()
@@ -281,6 +282,23 @@
     });
   }
 
+  // Safety net (see AGENTS.md): possession is only unresolved while a shot is in
+  // flight, and a live shot is never stationary. If the ball somehow ends up
+  // motionless with vincoli 0 — a dead ball, whatever the cause or resting place
+  // — fall back to the half-rule so a match can never stall permanently.
+  const DEAD_BALL_TICKS = 120;   // ~2 s
+  function deadBallGuard(S) {
+    const B = S.ball;
+    const stuck = S.phase === 'playing' && S.vincoli === 0 && B.holder === 0 && !B.kin &&
+      (B.vx * B.vx + B.vy * B.vy + B.vz * B.vz) < 0.25;
+    S.restTicks = stuck ? S.restTicks + 1 : 0;
+    if (S.restTicks >= DEAD_BALL_TICKS) {
+      S.possesso = 0; S.lancio = 0; S.vincoli = 1; S.lastReleaser = 0; S.inHand = false;
+      S.restTicks = 0;
+      S.events.push({ ev: 'unstick' });   // diagnostic only; clients ignore it
+    }
+  }
+
   // ---------------------------------------------------------------- one fixed tick
   // inputs: this tick's input events, applied in order before the physics step.
   function step(S, inputs) {
@@ -336,6 +354,7 @@
     if (B.y > MAX_Y) B.y = MAX_Y;
     physicsStep(S);
     if (B.y > MAX_Y) B.y = MAX_Y;
+    deadBallGuard(S);
     return S.events;
   }
 
@@ -353,7 +372,7 @@
       h: B.holder, k: B.kin ? 1 : 0, ton: B.trailOn ? 1 : 0,
       p: S.possesso, vc: S.vincoli, lc: S.lancio, ih: S.inHand ? 1 : 0,
       sc: [S.scores[1], S.scores[2]], ph: S.phase, w: S.winner, ac: S.aChi, lr: S.lastReleaser,
-      st: r2(S.scoringTimer), rt: r2(S.respawnTimer),
+      st: r2(S.scoringTimer), rt: r2(S.respawnTimer), rs: S.restTicks,
     };
   }
 
@@ -372,6 +391,7 @@
     S.phase = s.ph; S.winner = s.w; S.aChi = s.ac; S.lastReleaser = s.lr;
     S.scoringTimer = s.st; S.respawnTimer = s.rt;
     S.scoreDone = s.st >= SCORING_TIME;
+    S.restTicks = s.rs || 0;
     // hold targets are rebuilt: the holder's effective drag target is tx/tz
     // (unclamped pointer positions return via replayed move inputs)
     S.hold[1] = S.hold[2] = null;
@@ -387,6 +407,7 @@
       tick: S.tick, ph: S.phase, sc: S.scores.slice(), w: S.winner,
       p: S.possesso, vc: S.vincoli, lc: S.lancio, ih: S.inHand ? 1 : 0,
       ac: S.aChi, lr: S.lastReleaser, st: S.scoringTimer, rt: S.respawnTimer, sd: S.scoreDone ? 1 : 0,
+      rts: S.restTicks,
       sf: S.scoreFrom ? { x: S.scoreFrom.x, y: S.scoreFrom.y, z: S.scoreFrom.z } : null,
       sto: S.scoreTo ? { x: S.scoreTo.x, y: S.scoreTo.y, z: S.scoreTo.z } : null,
       b: [B.x, B.y, B.z, B.vx, B.vy, B.vz, B.scale, B.rot, B.kin ? 1 : 0, B.holder, B.drag,
@@ -402,6 +423,7 @@
     S.possesso = o.p; S.vincoli = o.vc; S.lancio = o.lc; S.inHand = !!o.ih;
     S.aChi = o.ac; S.lastReleaser = o.lr;
     S.scoringTimer = o.st; S.respawnTimer = o.rt; S.scoreDone = !!o.sd;
+    S.restTicks = o.rts || 0;
     S.scoreFrom = o.sf ? { x: o.sf.x, y: o.sf.y, z: o.sf.z } : null;
     S.scoreTo = o.sto ? { x: o.sto.x, y: o.sto.y, z: o.sto.z } : null;
     const B = S.ball, b = o.b;
